@@ -17,12 +17,20 @@ import (
 var (
 	appCfgFile = new(string)
 	runCfgFile = new(string)
+	mode       string
 )
 
 func init() {
-	flag.StringVar(appCfgFile, "appCfg", "config.json", "Path to the main application configuration file")
-	flag.StringVar(runCfgFile, "runCfg", "extraction_config.json", "Path to the extraction configuration file")
+	flag.StringVar(appCfgFile, "appCfg", "", "Path to the main application configuration file")
+	flag.StringVar(runCfgFile, "runCfg", "", "Path to the extraction configuration file")
+	flag.StringVar(&mode, "mode", "", "Mode of operation: E - Extract, I - Insert")
+
 	flag.Parse()
+
+	// Validate mode
+	if mode != "E" && mode != "I" {
+		log.Fatal("Invalid mode. Valid values are 'E' for Extract and 'I' for Insert.")
+	}
 
 	if *appCfgFile == "" || *runCfgFile == "" {
 		log.Fatal("Both appCfg and runCfg must be specified")
@@ -36,6 +44,7 @@ func init() {
 		log.Fatalf("Extraction configuration file does not exist: %s", *runCfgFile)
 	}
 }
+
 func main() {
 
 	appCfg, err := loadMainConfig(*appCfgFile)
@@ -76,8 +85,21 @@ func main() {
 	var summaryMu sync.Mutex
 	procSummary := make(map[string]ProcSummary)
 
-	LogFile := runCfg.PackageName + ".csv"
-	go writeProcLogs(filepath.Join(appCfg.LogFilePath, LogFile), procLogCh)
+	if (mode == "I" && !runCfg.RunInsertionParallel) || (mode == "E" && !runCfg.RunExtractionParallel) {
+		log.Println("Running procedures sequentially as parallel execution is disabled")
+		appCfg.Concurrency = 1
+	}
+
+	var LogFile, LogFileSummary string
+	if mode == "I" {
+		LogFile = runCfg.PackageName + "_insert.csv"
+		LogFileSummary = runCfg.PackageName + "_insert_summary.csv"
+	} else if mode == "E" {
+		LogFile = runCfg.PackageName + "_extract.csv"
+		LogFileSummary = runCfg.PackageName + "_extract_summary.csv"
+	}
+
+	go writeLog(filepath.Join(appCfg.LogFilePath, LogFile), procLogCh)
 
 	sem := make(chan struct{}, appCfg.Concurrency)
 	var wg sync.WaitGroup
@@ -100,7 +122,11 @@ func main() {
 		go func(solID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			runProceduresForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
+			if mode == "E" {
+				runExtractionForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
+			} else if mode == "I" {
+				runProceduresForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
+			}
 
 			// Update and log progress
 			mu.Lock()
@@ -112,8 +138,8 @@ func main() {
 
 	wg.Wait()
 	close(procLogCh)
-	LogFileSummary := runCfg.PackageName + "_summary.csv"
-	writeProcedureSummary(filepath.Join(appCfg.LogFilePath, LogFileSummary), procSummary)
+
+	writeSummary(filepath.Join(appCfg.LogFilePath, LogFileSummary), procSummary)
 
 	err = consolidateSpoolFiles(&runCfg)
 	if err != nil {

@@ -1,16 +1,24 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, extractionConfig *ExtractionConfig, procLogCh chan ProcLog, mutex *sync.Mutex, procSummary map[string]ProcSummary) {
+	panic("unimplemented")
+}
 
 // Consolidate multiple spool files per procedure into one <proc>.txt file
 func consolidateSpoolFiles(procConfig *ExtractionConfig) error {
+	fmt.Println("Extraction Output Directory:", procConfig.SpoolOutputPath)
 	files, err := os.ReadDir(procConfig.SpoolOutputPath)
 	if err != nil {
 		return fmt.Errorf("failed to read spool output directory: %w", err)

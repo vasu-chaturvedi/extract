@@ -20,7 +20,6 @@ type MainConfig struct {
 type ExtractionConfig struct {
 	PackageName           string   `json:"package_name"`
 	Procedures            []string `json:"procedures"`
-	ExtractionSQLPath     string   `json:"extraction_sql_path"`
 	SpoolOutputPath       string   `json:"spool_output_path"`
 	RunInsertionParallel  bool     `json:"run_insertion_parallel"`
 	RunExtractionParallel bool     `json:"run_extraction_parallel"`
