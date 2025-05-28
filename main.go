@@ -14,16 +14,16 @@ import (
 )
 
 func main() {
-	mainConfigPath := flag.String("main-config", "config.json", "Path to main config JSON file")
-	extractionConfigPath := flag.String("extraction-config", "extraction_config.json", "Path to extraction config JSON file")
+	appCfgFile := flag.String("main-config", "config.json", "Path to main config JSON file")
+	runCfgFile := flag.String("extraction-config", "extraction_config.json", "Path to extraction config JSON file")
 	flag.Parse()
 
-	appCfg, err := loadMainConfig(*mainConfigPath)
+	appCfg, err := loadMainConfig(*appCfgFile)
 	if err != nil {
 		log.Fatalf("Failed to load main config: %v", err)
 	}
 
-	runCfg, err := loadExtractionConfig(*extractionConfigPath)
+	runCfg, err := loadExtractionConfig(*runCfgFile)
 	if err != nil {
 		log.Fatalf("Failed to load extraction config: %v", err)
 	}
