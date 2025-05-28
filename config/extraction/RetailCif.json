@@ -1,5 +1,6 @@
 {
     "package_name": "RetailCifPack",
-    "procedures": ["RC001", "RC002", "RC003", "RC005", "RC006", "RC008", "RC009"]
+    "procedures": ["RC001", "RC002", "RC003", "RC005", "RC006", "RC008", "RC009"],
+    "SpoolOutputPath" : "./output"
 }
 
