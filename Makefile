@@ -1,4 +1,4 @@
 build:
 	go build -mod=vendor
 run:
-	./extract -main-config=./config/config.json -extraction-config=./config/extraction/RetailCif.json
+	./extract -appcfg=./config/config.json -extractcfg=./config/extraction/RetailCif.json

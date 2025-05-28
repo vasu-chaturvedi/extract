@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -13,10 +14,29 @@ import (
 	_ "github.com/godror/godror"
 )
 
-func main() {
-	appCfgFile := flag.String("main-config", "config.json", "Path to main config JSON file")
-	runCfgFile := flag.String("extraction-config", "extraction_config.json", "Path to extraction config JSON file")
+var (
+	appCfgFile = new(string)
+	runCfgFile = new(string)
+)
+
+func init() {
+	flag.StringVar(appCfgFile, "appCfg", "config.json", "Path to the main application configuration file")
+	flag.StringVar(runCfgFile, "runCfg", "extraction_config.json", "Path to the extraction configuration file")
 	flag.Parse()
+
+	if *appCfgFile == "" || *runCfgFile == "" {
+		log.Fatal("Both appCfg and runCfg must be specified")
+	}
+
+	if _, err := os.Stat(*appCfgFile); os.IsNotExist(err) {
+		log.Fatalf("Application configuration file does not exist: %s", *appCfgFile)
+	}
+
+	if _, err := os.Stat(*runCfgFile); os.IsNotExist(err) {
+		log.Fatalf("Extraction configuration file does not exist: %s", *runCfgFile)
+	}
+}
+func main() {
 
 	appCfg, err := loadMainConfig(*appCfgFile)
 	if err != nil {
@@ -56,7 +76,8 @@ func main() {
 	var summaryMu sync.Mutex
 	procSummary := make(map[string]ProcSummary)
 
-	go writeProcLogs(filepath.Join(appCfg.LogFilePath, "procedure_calls.csv"), procLogCh)
+	LogFile := runCfg.PackageName + ".csv"
+	go writeProcLogs(filepath.Join(appCfg.LogFilePath, LogFile), procLogCh)
 
 	sem := make(chan struct{}, appCfg.Concurrency)
 	var wg sync.WaitGroup
@@ -84,15 +105,15 @@ func main() {
 			// Update and log progress
 			mu.Lock()
 			completed++
-			fmt.Printf("Completed %d/%d (%.2f%%)\n", completed, totalSols, float64(completed)*100/float64(totalSols))
+			//fmt.Printf("Completed %d/%d (%.2f%%)\n", completed, totalSols, float64(completed)*100/float64(totalSols))
 			mu.Unlock()
 		}(sol)
 	}
 
 	wg.Wait()
 	close(procLogCh)
-
-	writeProcedureSummary(filepath.Join(appCfg.LogFilePath, "procedure_summary.csv"), procSummary)
+	LogFileSummary := runCfg.PackageName + "_summary.csv"
+	writeProcedureSummary(filepath.Join(appCfg.LogFilePath, LogFileSummary), procSummary)
 
 	err = consolidateSpoolFiles(&runCfg)
 	if err != nil {
