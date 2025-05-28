@@ -1,0 +1,3 @@
+name,length,align
+PROCNAME,15,left
+EXECDATE,10,right

@@ -23,6 +23,9 @@ type ExtractionConfig struct {
 	SpoolOutputPath       string   `json:"spool_output_path"`
 	RunInsertionParallel  bool     `json:"run_insertion_parallel"`
 	RunExtractionParallel bool     `json:"run_extraction_parallel"`
+	TemplatePath          string   `json:"template_path"`
+	Format                string   `json:"format"`
+	Delimiter             string   `json:"delimiter"`
 }
 
 func loadMainConfig(path string) (MainConfig, error) {

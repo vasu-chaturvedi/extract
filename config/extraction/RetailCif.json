@@ -1,6 +1,11 @@
 {
     "package_name": "RetailCifPack",
     "procedures": ["RC001", "RC002", "RC003", "RC005", "RC006", "RC008", "RC009"],
-    "spool_output_path" : "./output"
+    "spool_output_path" : "./output",
+    "template_path" : "./config/extraction/templates/",
+    "run_insertion_parallel" : true,
+    "run_extraction_parallel" : true,
+    "format": "delimited",
+    "delimiter": "|"
 }
 

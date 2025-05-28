@@ -12,6 +12,12 @@ type ProcLog struct {
 	ErrorDetails  string
 }
 
+type ColumnConfig struct {
+	Name   string
+	Length int
+	Align  string
+}
+
 type ProcSummary struct {
 	Procedure string
 	StartTime time.Time

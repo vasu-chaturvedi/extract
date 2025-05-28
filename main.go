@@ -124,6 +124,7 @@ func main() {
 			defer func() { <-sem }()
 			if mode == "E" {
 				runExtractionForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
+
 			} else if mode == "I" {
 				runProceduresForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
 			}
@@ -141,11 +142,7 @@ func main() {
 
 	writeSummary(filepath.Join(appCfg.LogFilePath, LogFileSummary), procSummary)
 
-	err = consolidateSpoolFiles(&runCfg)
-	if err != nil {
-		log.Printf("Error consolidating spool files: %v", err)
-	}
-
+	mergeFiles(&runCfg)
 	totalTime := time.Since(overallStart)
 	log.Printf("All done! Processed %d SOLs in %s", totalSols, totalTime)
 }
