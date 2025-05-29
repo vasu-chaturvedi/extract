@@ -1,34 +1,35 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/csv"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, procConfig *ExtractionConfig, logCh chan<- ProcLog, mu *sync.Mutex, summary map[string]ProcSummary) {
+func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, procConfig *ExtractionConfig, templates map[string][]ColumnConfig, logCh chan<- ProcLog, mu *sync.Mutex, summary map[string]ProcSummary) {
 	var wg sync.WaitGroup
 	procCh := make(chan string)
 
-	// Worker pool for parallel procedure execution
-	numWorkers := 4 // Adjust as needed for your environment
+	numWorkers := runtime.NumCPU() * 2
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for proc := range procCh {
 				start := time.Now()
-				err := extractData(ctx, db, proc, solID, procConfig)
+				log.Printf("📥 Extracting %s for SOL %s", proc, solID)
+				err := extractData(ctx, db, proc, solID, procConfig, templates)
 				end := time.Now()
 
 				plog := ProcLog{
@@ -49,12 +50,7 @@ func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, procConf
 				mu.Lock()
 				s, exists := summary[proc]
 				if !exists {
-					s = ProcSummary{
-						Procedure: proc,
-						StartTime: start,
-						EndTime:   end,
-						Status:    plog.Status,
-					}
+					s = ProcSummary{Procedure: proc, StartTime: start, EndTime: end, Status: plog.Status}
 				} else {
 					if start.Before(s.StartTime) {
 						s.StartTime = start
@@ -62,18 +58,17 @@ func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, procConf
 					if end.After(s.EndTime) {
 						s.EndTime = end
 					}
-					// Once failed always fail
 					if s.Status != "FAIL" && plog.Status == "FAIL" {
 						s.Status = "FAIL"
 					}
 				}
 				summary[proc] = s
 				mu.Unlock()
+				log.Printf("✅ Completed %s for SOL %s in %s", proc, solID, end.Sub(start).Round(time.Millisecond))
 			}
 		}()
 	}
 
-	// Feed procedures to workers
 	for _, proc := range procConfig.Procedures {
 		procCh <- proc
 	}
@@ -81,14 +76,10 @@ func runExtractionForSol(ctx context.Context, db *sql.DB, solID string, procConf
 	wg.Wait()
 }
 
-// Call stored procedure with solID parameter
-func extractData(ctx context.Context, db *sql.DB, procName, solID string, cfg *ExtractionConfig) error {
-	TemplFile := filepath.Join(cfg.TemplatePath, fmt.Sprintf("%s.csv", procName))
-	//fmt.Println("Using template file:", TemplFile)
-	cols, err := readColumnsFromCSV(TemplFile)
-
-	if err != nil {
-		return err
+func extractData(ctx context.Context, db *sql.DB, procName, solID string, cfg *ExtractionConfig, templates map[string][]ColumnConfig) error {
+	cols, ok := templates[procName]
+	if !ok {
+		return fmt.Errorf("missing template for procedure %s", procName)
 	}
 
 	colNames := make([]string, len(cols))
@@ -97,19 +88,23 @@ func extractData(ctx context.Context, db *sql.DB, procName, solID string, cfg *E
 	}
 
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE SOL_ID = :1", strings.Join(colNames, ", "), procName)
-	fmt.Printf("Executing query: %s with SOL_ID: %s\n", query, solID)
+	start := time.Now()
 	rows, err := db.QueryContext(ctx, query, solID)
 	if err != nil {
-		return err
+		return fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
+	log.Printf("🧮 Query executed for %s (SOL %s) in %s", procName, solID, time.Since(start).Round(time.Millisecond))
 
-	tempFile := filepath.Join(cfg.SpoolOutputPath, fmt.Sprintf("%s_%s.spool", procName, solID))
-	f, err := os.Create(tempFile)
+	spoolPath := filepath.Join(cfg.SpoolOutputPath, fmt.Sprintf("%s_%s.spool", procName, solID))
+	f, err := os.Create(spoolPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
+	buf := bufio.NewWriter(f)
+	defer buf.Flush()
 
 	for rows.Next() {
 		values := make([]sql.NullString, len(cols))
@@ -128,59 +123,47 @@ func extractData(ctx context.Context, db *sql.DB, procName, solID string, cfg *E
 				strValues = append(strValues, "")
 			}
 		}
-		f.WriteString(formatRow(cfg, cols, strValues) + "\n")
+		buf.WriteString(formatRow(cfg, cols, strValues) + "\n")
 	}
 	return nil
 }
 
-func mergeFiles(runCfg *ExtractionConfig) error {
-	path := runCfg.SpoolOutputPath
+func mergeFiles(cfg *ExtractionConfig) error {
+	for _, proc := range cfg.Procedures {
+		log.Printf("📦 Starting merge for procedure: %s", proc)
 
-	for _, proc := range runCfg.Procedures {
-		pattern := fmt.Sprintf("%s/%s*.spool", path, proc)
-		tempFile := fmt.Sprintf("%s/%s.tmp", path, proc)
-		finalFile := fmt.Sprintf("%s/%s.txt", path, proc)
+		pattern := filepath.Join(cfg.SpoolOutputPath, fmt.Sprintf("%s_*.spool", proc))
+		finalFile := filepath.Join(cfg.SpoolOutputPath, fmt.Sprintf("%s.txt", proc))
 
-		start := time.Now()
-
-		// Step 1: Create or truncate temp file
-		outFile, err := os.Create(tempFile)
+		files, err := filepath.Glob(pattern)
 		if err != nil {
-			log.Fatalf("Failed to create %s: %v", tempFile, err)
+			return fmt.Errorf("glob failed: %w", err)
+		}
+		sort.Strings(files)
+
+		outFile, err := os.Create(finalFile)
+		if err != nil {
 			return err
 		}
 		defer outFile.Close()
 
-		// Step 2: Run `cat ./output/RC001*.spool` and write to temp file
-		catCmd := exec.Command("bash", "-c", "cat "+pattern)
-		catCmd.Stdout = outFile
+		writer := bufio.NewWriter(outFile)
+		start := time.Now()
 
-		log.Printf("Merging files matching %s into %s...\n", pattern, tempFile)
-		if err := catCmd.Run(); err != nil {
-			log.Fatalf("Failed to merge files: %v", err)
-			return err
+		for _, file := range files {
+			in, err := os.Open(file)
+			if err != nil {
+				return err
+			}
+			scanner := bufio.NewScanner(in)
+			for scanner.Scan() {
+				writer.WriteString(scanner.Text() + "\n")
+			}
+			in.Close()
+			os.Remove(file)
 		}
-		log.Println("Merge successful.")
-
-		// Step 3: Rename temp file to final .txt
-		if err := os.Rename(tempFile, finalFile); err != nil {
-			log.Fatalf("Failed to rename %s to %s: %v", tempFile, finalFile, err)
-			return err
-		}
-		log.Printf("File written successfully to %s\n", finalFile)
-
-		// Step 4: Delete spool files only if merge was successful
-		rmCmd := exec.Command("bash", "-c", "rm "+pattern)
-		log.Printf("Deleting files: %s\n", pattern)
-		if err := rmCmd.Run(); err != nil {
-			log.Fatalf("Failed to delete spool files: %v", err)
-			return err
-		}
-		log.Println("Cleanup complete.")
-
-		// Step 5: Log total time taken
-		elapsed := time.Since(start)
-		log.Printf("Total time taken for procedure %s: %s\n", proc, elapsed)
+		writer.Flush()
+		log.Printf("📑 Merged %d files into %s in %s", len(files), finalFile, time.Since(start).Round(time.Second))
 	}
 	return nil
 }
@@ -192,27 +175,22 @@ func readColumnsFromCSV(path string) ([]ColumnConfig, error) {
 	}
 	defer f.Close()
 
-	r := csv.NewReader(f)
-	headers, err := r.Read()
+	r := bufio.NewReader(f)
+	csvr := csv.NewReader(r)
+	headers, err := csvr.Read()
 	if err != nil {
 		return nil, err
 	}
-
 	index := make(map[string]int)
 	for i, h := range headers {
 		index[strings.ToLower(h)] = i
 	}
-
 	var cols []ColumnConfig
 	for {
-		row, err := r.Read()
-		if err == io.EOF {
+		row, err := csvr.Read()
+		if err != nil {
 			break
 		}
-		if err != nil {
-			return nil, err
-		}
-
 		col := ColumnConfig{Name: row[index["name"]]}
 		if i, ok := index["length"]; ok && i < len(row) {
 			col.Length, _ = strconv.Atoi(row[i])

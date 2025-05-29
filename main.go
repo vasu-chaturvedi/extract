@@ -24,47 +24,45 @@ func init() {
 	flag.StringVar(appCfgFile, "appCfg", "", "Path to the main application configuration file")
 	flag.StringVar(runCfgFile, "runCfg", "", "Path to the extraction configuration file")
 	flag.StringVar(&mode, "mode", "", "Mode of operation: E - Extract, I - Insert")
-
 	flag.Parse()
 
-	// Validate mode
 	if mode != "E" && mode != "I" {
 		log.Fatal("Invalid mode. Valid values are 'E' for Extract and 'I' for Insert.")
 	}
-
 	if *appCfgFile == "" || *runCfgFile == "" {
 		log.Fatal("Both appCfg and runCfg must be specified")
 	}
-
 	if _, err := os.Stat(*appCfgFile); os.IsNotExist(err) {
 		log.Fatalf("Application configuration file does not exist: %s", *appCfgFile)
 	}
-
 	if _, err := os.Stat(*runCfgFile); os.IsNotExist(err) {
 		log.Fatalf("Extraction configuration file does not exist: %s", *runCfgFile)
 	}
 }
 
 func main() {
-
 	appCfg, err := loadMainConfig(*appCfgFile)
 	if err != nil {
 		log.Fatalf("Failed to load main config: %v", err)
 	}
-
 	runCfg, err := loadExtractionConfig(*runCfgFile)
 	if err != nil {
 		log.Fatalf("Failed to load extraction config: %v", err)
 	}
 
-	fmt.Println("extractionCfg", runCfg)
+	// Load templates
+	templates := make(map[string][]ColumnConfig)
+	for _, proc := range runCfg.Procedures {
+		tmplPath := filepath.Join(runCfg.TemplatePath, fmt.Sprintf("%s.csv", proc))
+		cols, err := readColumnsFromCSV(tmplPath)
+		if err != nil {
+			log.Fatalf("Failed to read template for %s: %v", proc, err)
+		}
+		templates[proc] = cols
+	}
 
 	connString := fmt.Sprintf(`user="%s" password="%s" connectString="%s:%d/%s"`,
 		appCfg.DBUser, appCfg.DBPassword, appCfg.DBHost, appCfg.DBPort, appCfg.DBSid)
-
-	fmt.Println("Connection String", connString)
-
-	procCount := len(runCfg.Procedures)
 
 	db, err := sql.Open("godror", connString)
 	if err != nil {
@@ -72,6 +70,7 @@ func main() {
 	}
 	defer db.Close()
 
+	procCount := len(runCfg.Procedures)
 	db.SetMaxOpenConns(appCfg.Concurrency * procCount)
 	db.SetMaxIdleConns(appCfg.Concurrency * procCount)
 	db.SetConnMaxLifetime(30 * time.Minute)
@@ -103,16 +102,9 @@ func main() {
 
 	sem := make(chan struct{}, appCfg.Concurrency)
 	var wg sync.WaitGroup
-
 	ctx := context.Background()
-
 	totalSols := len(sols)
-	log.Printf("Starting processing for %d SOL IDs and %d procedures", totalSols, procCount)
-
-	// Tracking the overall start time
 	overallStart := time.Now()
-
-	// Progress tracking
 	var mu sync.Mutex
 	completed := 0
 
@@ -122,17 +114,24 @@ func main() {
 		go func(solID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if mode == "E" {
-				runExtractionForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
+			log.Printf("➡️ Starting SOL %s", solID)
 
+			if mode == "E" {
+				runExtractionForSol(ctx, db, solID, &runCfg, templates, procLogCh, &summaryMu, procSummary)
 			} else if mode == "I" {
 				runProceduresForSol(ctx, db, solID, &runCfg, procLogCh, &summaryMu, procSummary)
 			}
 
-			// Update and log progress
 			mu.Lock()
 			completed++
-			//fmt.Printf("Completed %d/%d (%.2f%%)\n", completed, totalSols, float64(completed)*100/float64(totalSols))
+			if completed%100 == 0 || completed == totalSols {
+				elapsed := time.Since(overallStart)
+				estimatedTotal := time.Duration(float64(elapsed) / float64(completed) * float64(totalSols))
+				eta := estimatedTotal - elapsed
+				log.Printf("✅ Progress: %d/%d (%.2f%%) | Elapsed: %s | ETA: %s",
+					completed, totalSols, float64(completed)*100/float64(totalSols),
+					elapsed.Round(time.Second), eta.Round(time.Second))
+			}
 			mu.Unlock()
 		}(sol)
 	}
@@ -141,8 +140,8 @@ func main() {
 	close(procLogCh)
 
 	writeSummary(filepath.Join(appCfg.LogFilePath, LogFileSummary), procSummary)
-
-	mergeFiles(&runCfg)
-	totalTime := time.Since(overallStart)
-	log.Printf("All done! Processed %d SOLs in %s", totalSols, totalTime)
+	if mode == "E" {
+		mergeFiles(&runCfg)
+	}
+	log.Printf("🎯 All done! Processed %d SOLs in %s", totalSols, time.Since(overallStart).Round(time.Second))
 }

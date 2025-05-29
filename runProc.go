@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -12,14 +14,14 @@ func runProceduresForSol(ctx context.Context, db *sql.DB, solID string, procConf
 	var wg sync.WaitGroup
 	procCh := make(chan string)
 
-	// Worker pool for parallel procedure execution
-	numWorkers := 4 // Adjust as needed for your environment
+	numWorkers := runtime.NumCPU() * 2
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for proc := range procCh {
 				start := time.Now()
+				log.Printf("🔁 Inserting: %s.%s for SOL %s", procConfig.PackageName, proc, solID)
 				err := callProcedure(ctx, db, procConfig.PackageName, proc, solID)
 				end := time.Now()
 
@@ -41,12 +43,7 @@ func runProceduresForSol(ctx context.Context, db *sql.DB, solID string, procConf
 				mu.Lock()
 				s, exists := summary[proc]
 				if !exists {
-					s = ProcSummary{
-						Procedure: proc,
-						StartTime: start,
-						EndTime:   end,
-						Status:    plog.Status,
-					}
+					s = ProcSummary{Procedure: proc, StartTime: start, EndTime: end, Status: plog.Status}
 				} else {
 					if start.Before(s.StartTime) {
 						s.StartTime = start
@@ -54,7 +51,6 @@ func runProceduresForSol(ctx context.Context, db *sql.DB, solID string, procConf
 					if end.After(s.EndTime) {
 						s.EndTime = end
 					}
-					// Once failed always fail
 					if s.Status != "FAIL" && plog.Status == "FAIL" {
 						s.Status = "FAIL"
 					}
@@ -65,7 +61,6 @@ func runProceduresForSol(ctx context.Context, db *sql.DB, solID string, procConf
 		}()
 	}
 
-	// Feed procedures to workers
 	for _, proc := range procConfig.Procedures {
 		procCh <- proc
 	}
@@ -73,9 +68,10 @@ func runProceduresForSol(ctx context.Context, db *sql.DB, solID string, procConf
 	wg.Wait()
 }
 
-// Call stored procedure with solID parameter
 func callProcedure(ctx context.Context, db *sql.DB, pkgName, procName, solID string) error {
 	query := fmt.Sprintf("BEGIN %s.%s(:1); END;", pkgName, procName)
+	start := time.Now()
 	_, err := db.ExecContext(ctx, query, solID)
+	log.Printf("✅ Finished: %s.%s for SOL %s in %s", pkgName, procName, solID, time.Since(start).Round(time.Millisecond))
 	return err
 }
